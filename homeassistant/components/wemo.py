@@ -15,7 +15,7 @@ from homeassistant.helpers import config_validation as cv
 
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 
-REQUIREMENTS = ['pywemo==0.4.28']
+REQUIREMENTS = ['pywemo==0.4.34']
 
 DOMAIN = 'wemo'
 
@@ -24,6 +24,7 @@ WEMO_MODEL_DISPATCH = {
     'Bridge':  'light',
     'CoffeeMaker': 'switch',
     'Dimmer': 'light',
+    'Humidifier': 'fan',
     'Insight': 'switch',
     'LightSwitch': 'switch',
     'Maker':   'switch',
@@ -57,12 +58,17 @@ def coerce_host_port(value):
 
 
 CONF_STATIC = 'static'
+CONF_DISCOVERY = 'discovery'
+
+DEFAULT_DISCOVERY = True
 
 CONFIG_SCHEMA = vol.Schema({
     DOMAIN: vol.Schema({
         vol.Optional(CONF_STATIC, default=[]): vol.Schema([
             vol.All(cv.string, coerce_host_port)
-        ])
+        ]),
+        vol.Optional(CONF_DISCOVERY,
+                     default=DEFAULT_DISCOVERY): cv.boolean
     }),
 }, extra=vol.ALLOW_EXTRA)
 
@@ -77,7 +83,7 @@ def setup(hass, config):
 
     def stop_wemo(event):
         """Shutdown Wemo subscriptions and subscription thread on exit."""
-        _LOGGER.info("Shutting down subscriptions.")
+        _LOGGER.debug("Shutting down subscriptions.")
         SUBSCRIPTION_REGISTRY.stop()
 
     hass.bus.listen_once(EVENT_HOMEASSISTANT_STOP, stop_wemo)
@@ -90,6 +96,8 @@ def setup(hass, config):
 
         # Only register a device once
         if serial in KNOWN_DEVICES:
+            _LOGGER.debug('Ignoring known device %s %s',
+                          service, discovery_info)
             return
         _LOGGER.debug('Discovered unique device %s', serial)
         KNOWN_DEVICES.append(serial)
@@ -117,6 +125,7 @@ def setup(hass, config):
 
     devices = []
 
+    _LOGGER.debug("Scanning statically configured WeMo devices...")
     for host, port in config.get(DOMAIN, {}).get(CONF_STATIC, []):
         url = setup_url_for_address(host, port)
 
@@ -133,15 +142,19 @@ def setup(hass, config):
             _LOGGER.error('Unable to access %s (%s)', url, err)
             continue
 
-        devices.append((url, device))
+        if not [d[1] for d in devices
+                if d[1].serialnumber == device.serialnumber]:
+            devices.append((url, device))
 
-    _LOGGER.info("Scanning for WeMo devices.")
-    devices.extend(
-        (setup_url_for_device(device), device)
-        for device in pywemo.discover_devices())
+    if config.get(DOMAIN, {}).get(CONF_DISCOVERY):
+        _LOGGER.debug("Scanning for WeMo devices...")
+        for device in pywemo.discover_devices():
+            if not [d[1] for d in devices
+                    if d[1].serialnumber == device.serialnumber]:
+                devices.append((setup_url_for_device(device), device))
 
     for url, device in devices:
-        _LOGGER.info('Adding wemo at %s:%i', device.host, device.port)
+        _LOGGER.debug('Adding WeMo device at %s:%i', device.host, device.port)
 
         discovery_info = {
             'model_name': device.model_name,
